@@ -1,0 +1,163 @@
+name: Sync upstream and publish fork
+
+on:
+  schedule:
+    # Daily at 18:37 UTC (02:37 UTC+8).
+    - cron: '37 18 * * *'
+  workflow_dispatch:
+  push:
+    branches:
+      - play/rino
+    paths:
+      - '.github/workflows/upstream-release.yml'
+      - 'Plain Craft Launcher 2/**'
+      - 'PCLCS/**'
+      - 'MeloongCore'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pcl-rinopaw-upstream-release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync upstream into play/rino
+    if: github.repository == 'RinoPaw/PCL'
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+      upstream_sha: ${{ steps.plan.outputs.upstream_sha }}
+      release_tag: ${{ steps.plan.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: play/rino
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Merge upstream/main into play/rino
+        id: plan
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/Meloong-Git/PCL.git
+          git fetch --no-tags upstream main
+          upstream_sha="$(git rev-parse upstream/main)"
+
+          git fetch --no-tags origin play/rino
+          git checkout -B play/rino origin/play/rino
+          updated=false
+          if ! git merge-base --is-ancestor upstream/main HEAD; then
+            git merge --no-edit upstream/main
+            updated=true
+          fi
+
+          file='Plain Craft Launcher 2/Modules/ModSecret.vb'
+          if ! grep -Eq '^[[:space:]]*Public Const RestrictMcDownload As Boolean = False[[:space:]]*$' "$file"; then
+            echo "::error::Minecraft download setting was lost; upstream merge requires manual review."
+            exit 1
+          fi
+          if ! grep -Fq 'OpenWebsite("https://github.com/RinoPaw/PCL/releases/latest")' "$file"; then
+            echo "::error::Fork Release update link was lost; upstream merge requires manual review."
+            exit 1
+          fi
+
+          if [ "$updated" = true ]; then
+            git push origin HEAD:play/rino
+          fi
+
+          source_sha="$(git rev-parse HEAD)"
+          release_tag="pcl-rinopaw-$(git rev-parse --short=12 HEAD)"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $release_tag already exists; skip."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-release:
+    name: Build Windows executable and publish GitHub Release
+    needs: sync
+    if: needs.sync.outputs.build == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout exact synchronized source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.source_sha }}
+          fetch-depth: 0
+          submodules: true
+          persist-credentials: false
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v3
+        with:
+          msbuild-architecture: x64
+
+      - name: Generate bundled help
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'PCL2Help'
+          git clone --depth 1 --branch master https://github.com/LTCatt/PCL2Help.git $dir
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to clone PCL2Help' }
+          # Match the upstream build: drop top-level files, then zip help content.
+          Get-ChildItem -LiteralPath $dir -File | Remove-Item -Force
+          $zip = Join-Path $env:RUNNER_TEMP 'PCL-Help.zip'
+          Compress-Archive -Path (Join-Path $dir '*') -DestinationPath $zip -Force
+          Copy-Item -LiteralPath $zip -Destination 'Plain Craft Launcher 2\Resources\Help.zip' -Force
+
+      - name: Restore NuGet packages
+        shell: pwsh
+        run: dotnet restore 'PCLCS\PCLCS.csproj'
+
+      - name: Build Release
+        shell: pwsh
+        run: msbuild 'Plain Craft Launcher 2\Plain Craft Launcher 2.vbproj' -p:Configuration=Release
+
+      - name: Package executable and checksum
+        id: package
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ needs.sync.outputs.release_tag }}
+        run: |
+          $exe = 'Plain Craft Launcher 2\obj\Release\Plain Craft Launcher 2.exe'
+          if (!(Test-Path -LiteralPath $exe)) { throw "Build artifact not found: $exe" }
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $filename = "PCL-RinoPaw-$env:RELEASE_TAG.exe"
+          $destination = Join-Path 'dist' $filename
+          Copy-Item -LiteralPath $exe -Destination $destination -Force
+          $checksum = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$checksum  $filename" | Set-Content -Path (Join-Path dist 'SHA256SUMS.txt') -Encoding utf8
+          $source = Get-Content 'Plain Craft Launcher 2\Modules\Base\ModBase.vb' -Raw
+          $version = if ($source -match 'VersionBaseName As String = "([^"]+)"') { $Matches[1] } else { 'unknown' }
+          "title=PCL (RinoPaw Fork) $version [$env:RELEASE_TAG]" >> $env:GITHUB_OUTPUT
+
+      - name: Publish Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.sync.outputs.release_tag }}
+          SOURCE_SHA: ${{ needs.sync.outputs.source_sha }}
+          UPSTREAM_SHA: ${{ needs.sync.outputs.upstream_sha }}
+          RELEASE_TITLE: ${{ steps.package.outputs.title }}
+        run: |
+          $notes = @"
+          Unofficial community build based on Meloong-Git/PCL.
+          Minecraft downloads are enabled by the RinoPaw fork.
+          Upstream commit: $env:UPSTREAM_SHA
+          Fork source commit: $env:SOURCE_SHA
+          Source: https://github.com/$env:GITHUB_REPOSITORY/tree/$env:SOURCE_SHA
+          "@
+          gh release create $env:RELEASE_TAG 'dist/*.exe' 'dist/SHA256SUMS.txt' --repo $env:GITHUB_REPOSITORY --target $env:SOURCE_SHA --title $env:RELEASE_TITLE --notes $notes
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to publish GitHub Release' }
