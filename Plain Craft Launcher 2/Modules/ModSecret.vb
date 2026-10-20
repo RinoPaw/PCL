@@ -146,13 +146,14 @@ Friend Module ModSecret
 #Region "更新"
 
     Friend Sub UpdateCheckByButton()
-        Hint("该版本中不包含更新功能……")
+        RunInNewThread(Sub() ModForkUpdate.CheckForUpdates(True), "RinoPaw Fork update check", ThreadPriority.BelowNormal)
     End Sub
 
     Friend IsUpdateWaitingRestart As Boolean = False
     Public Sub UpdateRestart(TriggerRestartAndByEnd As Boolean)
     End Sub
     Public Sub UpdateReplace(ProcessId As Integer, OldFileName As String, NewFileName As String, TriggerRestart As Boolean)
+        ModForkUpdate.ApplyDownloadedUpdate(ProcessId, OldFileName, NewFileName, TriggerRestart)
     End Sub
 
     ''' <summary>
@@ -173,7 +174,7 @@ Friend Module ModSecret
     ''' </summary>
     Public ServerConfig As JObject
 
-    Public ServerLoader As New LoaderTask(Of Integer, Integer)("PCL 配置更新", Sub() Logger.Info("该版本中不包含更新通知功能……"), Priority:=ThreadPriority.BelowNormal) With
+    Public ServerLoader As New LoaderTask(Of Integer, Integer)("RinoPaw Fork 更新检查", Sub() ModForkUpdate.CheckForUpdates(False), Priority:=ThreadPriority.BelowNormal) With
         {.ReloadTimeout = 1000 * 60 * 60} '超时 1 小时
 
 #End Region
