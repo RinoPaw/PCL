@@ -107,16 +107,7 @@ Public Class PageSetupSystem
     ''' 若返回 Nothing，则代表无更新缓存文件或出错。
     ''' </summary>
     Public Shared Function IsLauncherNewest() As Boolean?
-        Try
-            '确认服务器公告是否正常
-            Dim ServerContent As String = If(FileUtils.TryReadAsString(PathTemp & "Cache\Notice.cfg"), "")
-            If ServerContent.Split("|").Count < 3 Then Return Nothing
-            '确认是否为最新
-            Return ServerContent.Split("|")(If(BuildType = BuildTypes.Release, 2, 1)) <= VersionCode
-        Catch ex As Exception
-            Logger.Error(ex, "确认启动器更新失败")
-            Return Nothing
-        End Try
+        Return ModForkUpdate.LatestBuildIsCurrent
     End Function
 
 #Region "导出 / 导入设置"
