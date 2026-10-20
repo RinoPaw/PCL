@@ -152,7 +152,7 @@ RetryCacheCheck:
         If BuildType = BuildTypes.Debug Then Return
         Try
             Dim MutexCreatedNew As Boolean
-            PclMutex = New Mutex(True, "PCL_SingletonMutex", MutexCreatedNew)
+            PclMutex = New Mutex(True, "PCL_RinoPaw_SingletonMutex", MutexCreatedNew)
             If MutexCreatedNew Then Return
             Logger.Warn("已有一个 PCL 实例正在运行")
             '等待已有的 PCL 退出
@@ -164,8 +164,7 @@ RetryCacheCheck:
                 End Try
             End If
             '将已有的 PCL 窗口拖出来
-            Dim WindowHwnd As IntPtr = FindWindow(Nothing, "Plain Craft Launcher　")
-            If WindowHwnd = IntPtr.Zero Then WindowHwnd = FindWindow(Nothing, "Plain Craft Launcher 2　")
+            Dim WindowHwnd As IntPtr = FindWindow(Nothing, "Plain Craft Launcher (RinoPaw)　")
             If WindowHwnd <> IntPtr.Zero Then ShowWindowToTop(WindowHwnd)
             '播放提示音并退出
             Beep()
